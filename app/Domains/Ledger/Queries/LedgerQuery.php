@@ -91,6 +91,45 @@ class LedgerQuery
                 'revenue' => $income, 'expenses' => $expense, 'profit' => $income - $expense];
     }
 
+    /** One row per period: revenue, expenses, profit, cashflow. Powers the dashboard chart. */
+    public static function monthlySummary(int $tenantId): array
+    {
+        return array_map(function (string $period) use ($tenantId) {
+            $pnl = self::profitAndLoss($tenantId, $period);
+            $cf  = self::cashflow($tenantId, $period);
+
+            return [
+                'period'   => $period,
+                'revenue'  => $pnl['revenue'],
+                'expenses' => $pnl['expenses'],
+                'profit'   => $pnl['profit'],
+                'cashflow' => $cf['net_cashflow'],
+            ];
+        }, self::availablePeriods($tenantId));
+    }
+
+    /** Net movement per account across all periods (for the breakdown table). */
+    public static function accountTotals(int $tenantId): array
+    {
+        return DB::table('journal_lines as jl')
+            ->join('journal_entries as je', 'je.id', '=', 'jl.journal_entry_id')
+            ->join('accounts as a', 'a.id', '=', 'jl.account_id')
+            ->where('je.tenant_id', $tenantId)
+            ->groupBy('a.source_code', 'a.name', 'a.type')
+            ->orderBy('a.source_code')
+            ->selectRaw('a.source_code code, a.name, a.type, '
+                . 'COALESCE(SUM(jl.debit),0) debit, COALESCE(SUM(jl.credit),0) credit')
+            ->get()
+            ->map(fn ($r) => [
+                'code'   => $r->code,
+                'name'   => $r->name,
+                'type'   => $r->type,
+                'debit'  => (float) $r->debit,
+                'credit' => (float) $r->credit,
+                'net'    => (float) $r->debit - (float) $r->credit,
+            ])->all();
+    }
+
     private static function lineQuery(int $tenantId, string $period)
     {
         return DB::table('journal_lines as jl')
