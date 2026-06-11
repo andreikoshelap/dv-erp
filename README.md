@@ -1,43 +1,45 @@
-# gatto — Slice 2: natural-language layer over the ledger (Laravel AI SDK)
+# Slice 4 — Pest tests + CI
 
-Ask finance questions in plain language; Claude answers using **read-only,
-tenant-scoped tools** over the DWH from Slice 1 — it never sees raw SQL and
-cannot invent numbers.
+Deterministic tests over the data layer. No LLM is called — every figure is
+computed by the DB, so the suite runs in milliseconds with no API keys.
 
-## Setup (on top of Slice 1)
-```bash
-composer require laravel/ai
-php artisan vendor:publish --provider="Laravel\Ai\AiServiceProvider"
-php artisan migrate            # creates agent_conversations tables
-# .env:
-#   ANTHROPIC_API_KEY=sk-ant-...
+## Files
 ```
-Copy `app/Ai/`, `app/Domains/Ledger/Queries/`, `app/Console/Commands/AskFinance.php`,
-and the updated `config/erp.php` into the project.
+tests/Pest.php                       # RefreshDatabase + seedLedger() helper
+tests/Feature/LedgerIngestionTest.php # counts, idempotency, debit == credit
+tests/Feature/LedgerQueryTest.php     # cashflow, P&L, movements, summary, totals
+tests/Feature/DashboardApiTest.php    # GET /api/summary, POST /api/ask validation
+.github/workflows/tests.yml           # CI: setup-php → composer → php artisan test
+```
+
+## One-time setup
+Tests use SQLite in-memory. In `phpunit.xml`, make sure these env lines are
+present and uncommented inside `<php>`:
+
+```xml
+<env name="DB_CONNECTION" value="sqlite"/>
+<env name="DB_DATABASE" value=":memory:"/>
+```
+
+(All migrations use portable column types, so SQLite is fine for tests even
+though dev/prod run on PostgreSQL.)
 
 ## Run
 ```bash
-php artisan finance:ask "какой был денежный поток в марте 2026?"   # ~ 23130 EUR
-php artisan finance:ask "какая была прибыль в марте?"              # revenue 22150, expenses 13350, profit 8800
-php artisan finance:ask "сколько на банковском счёте пришло за февраль?"
-php artisan finance:ask "What's the revenue trend across the quarter?"
+php artisan test
+# or just the data layer:
+php artisan test --filter=LedgerQuery
 ```
 
-## How it works
-```
-question ─▶ FinanceAnalyst (agent, Provider=Anthropic)
-                 │ picks tool + params (model reasoning)
-                 ▼
-   AvailablePeriods / ListAccounts / AccountMovement / Cashflow / ProfitAndLoss
-                 │ each scoped to tenant_id
-                 ▼
-   LedgerQuery  ── parameterized aggregates ──▶ PostgreSQL (Slice 1 DWH)
-```
+## What's asserted
+- ETL ingests exactly 8 accounts / 12 entries / 27 lines, and re-running is idempotent.
+- The ledger balances: sum(debit) == sum(credit) == 161 470.
+- March cashflow = 23 130, March profit = 8 800, account 1210 net = 53 710, etc.
+- `/api/summary` returns the right shape and figures.
+- `/api/ask` validates input (422 on empty) — without invoking the model.
 
-- `LedgerQuery` — every read the model is allowed to do, always `where tenant_id`.
-- Tools are thin adapters: description + JSON schema + handle() → `LedgerQuery`.
-- The model only chooses *which* tool and *what* params; figures come from the DB.
-
-## Model
-`FinanceAnalyst` pins `#[Provider(Lab::Anthropic)]` + a Haiku model (safe default).
-Bump the `#[Model(...)]` string to a Sonnet/Opus model for stronger multi-step reasoning.
+## Why no LLM in tests
+The agent is non-deterministic and costs an API call. The deterministic core
+(`LedgerQuery` + ETL) carries the correctness guarantees; the agent only *selects*
+which of these tested functions to call. So the valuable invariants are unit-tested,
+and CI needs no secrets.
