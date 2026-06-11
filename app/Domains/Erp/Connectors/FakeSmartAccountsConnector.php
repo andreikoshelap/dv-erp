@@ -42,36 +42,36 @@ class FakeSmartAccountsConnector implements ErpConnector
 
             // Sales invoice: DR receivables, CR revenue + VAT
             yield new JournalEntryData((string) ++$ref, $base->copy()->addDays(2), 'CLIENT_INVOICE',
-                documentNumber: "ARVE-$period",
                 lines: [
                     new JournalLineData('1310', debit: $sales + $vat),
                     new JournalLineData('4010', credit: $sales),
                     new JournalLineData('2310', credit: $vat),
-                ]);
+                ],
+                documentNumber: "ARVE-$period");
 
             // Customer payment lands in bank: DR bank, CR receivables
             yield new JournalEntryData((string) ++$ref, $base->copy()->addDays(14), 'BANK_PAYMENT',
-                documentNumber: "LAEK-$period",
                 lines: [
                     new JournalLineData('1210', debit: $sales + $vat),
                     new JournalLineData('1310', credit: $sales + $vat),
-                ]);
+                ],
+                documentNumber: "LAEK-$period");
 
             // Purchase invoice (goods): DR cogs, CR payables
             yield new JournalEntryData((string) ++$ref, $base->copy()->addDays(6), 'VENDOR_INVOICE',
-                documentNumber: "OST-$period",
                 lines: [
                     new JournalLineData('5010', debit: $cogs),
                     new JournalLineData('2110', credit: $cogs),
-                ]);
+                ],
+                documentNumber: "OST-$period");
 
             // Overheads paid from bank: DR overheads, CR bank
             yield new JournalEntryData((string) ++$ref, $base->copy()->addDays(20), 'BANK_PAYMENT',
-                documentNumber: "KULU-$period",
                 lines: [
                     new JournalLineData('5510', debit: $over),
                     new JournalLineData('1210', credit: $over),
-                ]);
+                ],
+                documentNumber: "KULU-$period");
         }
     }
 }

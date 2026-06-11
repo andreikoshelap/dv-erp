@@ -13,21 +13,20 @@ use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\Http;
 
 /**
- * Real SmartAccounts client. Drop-in replacement for the fake one:
- * just bind this in ErpServiceProvider when you have API keys in $source->config.
+ * Live SmartAccounts client. Drop-in for the fake connector — set ERP_FAKE=false
+ * and put {api_key, secret} into the source's config.
  *
- * Docs: https://sa.smartaccounts.eu/api  (HMAC-SHA256 signed, Estonian timezone,
- * 60 req/min, 1000 req/24h, dd.MM.yyyy dates, pagination via hasMoreEntries).
+ * Signing mirrors the reference WooCommerce client (smartman/woocommerce_smartaccounts):
+ *   sig = HMAC-SHA256(urlParams [+ body], secret), hex.  GET signs URL params only.
+ * Estonian timezone, timestamp ddMMyyyyHHmmss, 60 req/min & 1000 req/24h, dd.mm.yyyy dates.
  */
 class SmartAccountsConnector implements ErpConnector
 {
-    private const BASE = 'https://sa.smartaccounts.eu/en/api';
-
     public function fetchChartOfAccounts(SourceSystem $source): iterable
     {
         $json = $this->signedGet($source, '/settings/accounts:get');
 
-        foreach ($json['accounts'] ?? $json['objects'] ?? [] as $a) {
+        foreach ($this->unwrap($json, ['accounts', 'objects', 'rows']) as $a) {
             yield new AccountData(
                 code:   (string) $a['code'],
                 type:   AccountType::fromSource($a['type'] ?? 'ASSET'),
@@ -48,39 +47,56 @@ class SmartAccountsConnector implements ErpConnector
                 'pageNumber' => $page,
             ]);
 
-            foreach ($json['entries'] ?? $json['objects'] ?? [] as $e) {
+            foreach ($this->unwrap($json, ['entries', 'objects', 'rows']) as $e) {
                 yield new JournalEntryData(
-                    ref:            (string) $e['id'],
-                    date:           Carbon::createFromFormat('d.m.Y', $e['date']),
-                    docType:        $e['docType'] ?? 'LEDGER_ENTRY',
-                    documentNumber: $e['number'] ?? null,
-                    currency:       $e['currency'] ?? 'EUR',
+                    ref: (string) $e['id'],
+                    date: Carbon::createFromFormat('d.m.Y', $e['date']),
+                    docType: $e['docType'] ?? 'LEDGER_ENTRY',
                     lines: array_map(fn ($r) => new JournalLineData(
                         accountCode: (string) $r['account'],
                         debit:       (float) ($r['debitAmount'] ?? 0),
                         credit:      (float) ($r['creditAmount'] ?? 0),
                         description: $r['description'] ?? null,
                     ), $e['rows'] ?? []),
+                    documentNumber: $e['number'] ?? null,
+                    currency: $e['currency'] ?? 'EUR',
                 );
             }
+
             $more = (bool) ($json['hasMoreEntries'] ?? false);
             $page++;
         } while ($more);
     }
 
-    private function signedGet(SourceSystem $source, string $path, array $params = []): array
+    /** Public so the probe command and tests can inspect a raw signed call. */
+    public function signedGet(SourceSystem $source, string $path, array $params = []): array
     {
-        $params = array_merge($params, [
-            'timestamp' => now('Europe/Tallinn')->format('dmYHis'),
-            'apikey'    => $source->config['api_key'],
-        ]);
+        $base = rtrim(config('erp.smartaccounts.base', 'https://sa.smartaccounts.eu/api'), '/');
 
-        $query     = http_build_query($params);
-        $signature = hash_hmac('sha256', $query, $source->config['secret']); // body empty on GET
+        // apikey + timestamp first, then caller params — matches the reference client.
+        $query = http_build_query(array_merge([
+            'apikey'    => $source->config['api_key'] ?? '',
+            'timestamp' => now('Europe/Tallinn')->format('dmYHis'),
+        ], $params));
+
+        $signature = hash_hmac('sha256', $query, $source->config['secret'] ?? ''); // GET: no body
 
         return Http::acceptJson()
-            ->get(self::BASE . $path . '?' . $query . '&signature=' . $signature)
+            ->timeout((int) config('erp.smartaccounts.timeout', 60))
+            ->get("{$base}{$path}?{$query}&signature={$signature}")
             ->throw()
             ->json();
+    }
+
+    /** Find the list payload regardless of which wrapper key the API uses. */
+    private function unwrap(array $json, array $keys): array
+    {
+        foreach ($keys as $k) {
+            if (isset($json[$k]) && is_array($json[$k])) {
+                return $json[$k];
+            }
+        }
+
+        return array_is_list($json) ? $json : []; // top-level array, or nothing recognizable
     }
 }
