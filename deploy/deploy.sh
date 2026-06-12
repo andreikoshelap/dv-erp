@@ -20,7 +20,7 @@ npm ci
 npm run build                        # outputs to dist/<project>/browser
 # publish the build to the nginx root
 rm -rf "$ROOT/dashboard"
-cp -r dist/*/browser "$ROOT/dashboard"
+cp -r dist/erp-front/browser "$ROOT/dashboard"
 
 echo "== Reload =="
 sudo nginx -t && sudo systemctl reload nginx
